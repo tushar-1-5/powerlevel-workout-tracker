@@ -55,4 +55,4 @@ example
 /*.pdf
 
 # Claude Code per-session runtime state (pid, session id) — not project config
-.claude/scheduled_tasks.lock
+.claude/
