@@ -41,3 +41,18 @@ example
 # generated native folders
 /ios
 /android
+
+# Local teaching site — written for this project, not part of the app
+/docs/
+
+# Scratch and working files. These live in "../PowerLevel scratch/" instead.
+# Root-anchored on purpose: a bare *.jpg would also hide legitimate art
+# under assets/, which is not what we want.
+/scratchpad_ignore/
+/*.tmp
+/*.jpg
+/*.jpeg
+/*.pdf
+
+# Claude Code per-session runtime state (pid, session id) — not project config
+.claude/scheduled_tasks.lock
