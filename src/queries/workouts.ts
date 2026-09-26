@@ -1,12 +1,13 @@
 import { getDb } from '@/db/client';
-import type { SetType, Workout, WorkoutExercise, WorkoutSet } from '@/db/types';
+import type { MuscleGroup, SetType, WeightMode, Workout, WorkoutExercise, WorkoutSet } from '@/db/types';
 import { newId } from '@/lib/id';
 import { round2 } from '@/lib/units';
+import { volumeFactor } from '@/lib/weightMode';
 
 const WORKOUT_COLS =
   'id, split_id, split_day_id, day_name, started_at, finished_at, duration_seconds, notes';
 const WE_COLS =
-  'id, workout_id, exercise_id, position, substituted_for_exercise_id, is_ad_hoc, skipped, notes';
+  'id, workout_id, exercise_id, position, substituted_for_exercise_id, is_ad_hoc, skipped, notes, source_split_day_exercise_id';
 const SET_COLS =
   'id, workout_exercise_id, position, weight_kg, reps, set_type, to_failure, parent_set_id, notes, logged_at';
 
@@ -30,8 +31,13 @@ export interface StartWorkoutInput {
   splitId: string | null;
   splitDayId: string | null;
   dayName: string;
-  /** Exercise ids in the order they should appear, from the split day. */
-  exerciseIds: string[];
+  /**
+   * Exercises in the order they should appear, from the split day. Each
+   * entry's `sourceSplitDayExerciseId` is the `split_day_exercises` row it
+   * came from — carried through so a mid-workout swap/reorder/remove can
+   * later write the same change back to that exact split row.
+   */
+  exercises: { exerciseId: string; sourceSplitDayExerciseId: string | null }[];
   /** Set only when backfilling a workout you forgot to log. */
   startedAt?: number;
 }
@@ -57,12 +63,13 @@ export async function startWorkout(input: StartWorkoutInput): Promise<string> {
       [id, input.splitId, input.splitDayId, input.dayName, startedAt, now, now],
     );
 
-    for (let i = 0; i < input.exerciseIds.length; i += 1) {
+    for (let i = 0; i < input.exercises.length; i += 1) {
+      const { exerciseId, sourceSplitDayExerciseId } = input.exercises[i];
       await db.runAsync(
         `INSERT INTO workout_exercises
-           (id, workout_id, exercise_id, position, is_ad_hoc, skipped, created_at, updated_at, dirty)
-         VALUES (?, ?, ?, ?, 0, 0, ?, ?, 1);`,
-        [newId(), id, input.exerciseIds[i], i, now, now],
+           (id, workout_id, exercise_id, position, source_split_day_exercise_id, is_ad_hoc, skipped, created_at, updated_at, dirty)
+         VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 1);`,
+        [newId(), id, exerciseId, i, sourceSplitDayExerciseId, now, now],
       );
     }
   });
@@ -156,6 +163,9 @@ export interface WorkoutSummaryExercise {
   topReps: number;
   /** True if `topWeightKg` beats every prior finished session's best. */
   isPr: boolean;
+  /** Display only — so a per-side top set reads "7.5 kg/arm", never doubled. */
+  weight_mode: WeightMode;
+  muscle_group: MuscleGroup;
 }
 
 export interface WorkoutSummary {
@@ -180,12 +190,14 @@ export async function getWorkoutSummary(workoutId: string): Promise<WorkoutSumma
     workout_exercise_id: string;
     exercise_id: string;
     exercise_name: string;
+    weight_mode: WeightMode;
+    muscle_group: MuscleGroup;
     weight_kg: number;
     reps: number;
     set_type: SetType;
     parent_set_id: string | null;
   }>(
-    `SELECT s.workout_exercise_id, we.exercise_id, ex.name AS exercise_name,
+    `SELECT s.workout_exercise_id, we.exercise_id, ex.name AS exercise_name, ex.weight_mode, ex.muscle_group,
             s.weight_kg, s.reps, s.set_type, s.parent_set_id
        FROM sets s
        JOIN workout_exercises we ON we.id = s.workout_exercise_id
@@ -196,7 +208,11 @@ export async function getWorkoutSummary(workoutId: string): Promise<WorkoutSumma
   );
 
   const workingRows = rows.filter((r) => r.set_type === 'working');
-  const totalVolumeKg = round2(workingRows.reduce((sum, r) => sum + r.weight_kg * r.reps, 0));
+  // Per-side sets count twice (both limbs did the work) — same rule as
+  // `getWeeklyVolume`. The PR check below deliberately doesn't use the factor.
+  const totalVolumeKg = round2(
+    workingRows.reduce((sum, r) => sum + r.weight_kg * r.reps * volumeFactor(r.weight_mode), 0),
+  );
 
   // Keyed by workout_exercise, not exercise_id, so an exercise trained twice
   // in one session (swapped back in, say) gets its own line instead of being
@@ -204,7 +220,14 @@ export async function getWorkoutSummary(workoutId: string): Promise<WorkoutSumma
   // ORDER BY, so this also comes out in the order you actually trained.
   const topByWorkoutExercise = new Map<
     string,
-    { exerciseId: string; exerciseName: string; weightKg: number; reps: number }
+    {
+      exerciseId: string;
+      exerciseName: string;
+      weightKg: number;
+      reps: number;
+      weight_mode: WeightMode;
+      muscle_group: MuscleGroup;
+    }
   >();
   for (const r of workingRows) {
     if (r.parent_set_id !== null) continue; // PRs only ever consider the top link.
@@ -215,6 +238,8 @@ export async function getWorkoutSummary(workoutId: string): Promise<WorkoutSumma
         exerciseName: r.exercise_name,
         weightKg: r.weight_kg,
         reps: r.reps,
+        weight_mode: r.weight_mode,
+        muscle_group: r.muscle_group,
       });
     }
   }
@@ -228,6 +253,8 @@ export async function getWorkoutSummary(workoutId: string): Promise<WorkoutSumma
       topWeightKg: top.weightKg,
       topReps: top.reps,
       isPr: previousBest === null || top.weightKg > previousBest,
+      weight_mode: top.weight_mode,
+      muscle_group: top.muscle_group,
     });
   }
 
@@ -245,11 +272,18 @@ export async function getWorkoutExercises(workoutId: string): Promise<WorkoutExe
   );
 }
 
+export async function getWorkoutExercise(workoutExerciseId: string): Promise<WorkoutExercise | null> {
+  return getDb().getFirstAsync<WorkoutExercise>(
+    `SELECT ${WE_COLS} FROM workout_exercises WHERE id = ? AND deleted_at IS NULL;`,
+    [workoutExerciseId],
+  );
+}
+
 /** Appends an exercise to the end of a running session. */
 export async function addExerciseToWorkout(
   workoutId: string,
   exerciseId: string,
-  options: { isAdHoc?: boolean } = {},
+  options: { isAdHoc?: boolean; sourceSplitDayExerciseId?: string | null } = {},
 ): Promise<string> {
   const db = getDb();
   const now = Date.now();
@@ -264,9 +298,9 @@ export async function addExerciseToWorkout(
   const id = newId();
   await db.runAsync(
     `INSERT INTO workout_exercises
-       (id, workout_id, exercise_id, position, is_ad_hoc, skipped, created_at, updated_at, dirty)
-     VALUES (?, ?, ?, ?, ?, 0, ?, ?, 1);`,
-    [id, workoutId, exerciseId, position, options.isAdHoc ? 1 : 0, now, now],
+       (id, workout_id, exercise_id, position, source_split_day_exercise_id, is_ad_hoc, skipped, created_at, updated_at, dirty)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 1);`,
+    [id, workoutId, exerciseId, position, options.sourceSplitDayExerciseId ?? null, options.isAdHoc ? 1 : 0, now, now],
   );
 
   return id;

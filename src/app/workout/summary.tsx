@@ -14,6 +14,7 @@ import { formatDuration, formatLongDate, toDateKey } from '@/lib/format';
 import * as haptics from '@/lib/haptics';
 import { TODAY } from '@/lib/routes';
 import { formatWeight, fromDisplay, kgToLb, toDisplay, UNIT_LABEL } from '@/lib/units';
+import { weightSuffix } from '@/lib/weightMode';
 import { getLatestBodyweight, logBodyweight } from '@/queries/bodyweight';
 import { getSettings } from '@/queries/settings';
 import { getWorkoutSummary, type WorkoutSummary } from '@/queries/workouts';
@@ -144,7 +145,8 @@ export default function WorkoutSummaryScreen() {
               <View key={pr.exerciseId} style={styles.prRow}>
                 <Ionicons name="star" size={16} color={colors.accent} />
                 <Text style={styles.prText}>
-                  {pr.exerciseName} — {formatWeight(toDisplayWeight(pr.topWeightKg))} {unitLabel} ×{' '}
+                  {pr.exerciseName} — {formatWeight(toDisplayWeight(pr.topWeightKg))}{' '}
+                  {weightSuffix(pr, unitLabel)} ×{' '}
                   {pr.topReps}
                 </Text>
               </View>
@@ -162,7 +164,7 @@ export default function WorkoutSummaryScreen() {
                 {ex.exerciseName}
               </Text>
               <Text style={styles.exTop}>
-                {formatWeight(toDisplayWeight(ex.topWeightKg))} {unitLabel} × {ex.topReps}
+                {formatWeight(toDisplayWeight(ex.topWeightKg))} {weightSuffix(ex, unitLabel)} × {ex.topReps}
               </Text>
               {ex.isPr ? <Text style={styles.exPr}>PR</Text> : null}
             </View>

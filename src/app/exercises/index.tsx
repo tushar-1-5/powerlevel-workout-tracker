@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -23,9 +22,9 @@ import {
   type MuscleGroup,
 } from '@/db/types';
 import * as haptics from '@/lib/haptics';
-import { addExerciseToDay, swapExerciseInDay } from '@/queries/splits';
-import { listExercises } from '@/queries/exercises';
-import { addExerciseToWorkout, getWorkout, swapWorkoutExercise } from '@/queries/workouts';
+import { addExerciseToDay, getDayExercise, swapExerciseInDay } from '@/queries/splits';
+import { getExercise, listExercises } from '@/queries/exercises';
+import { addExerciseToWorkout, getWorkout, getWorkoutExercise, swapWorkoutExercise } from '@/queries/workouts';
 import { colors, font, glass, radius, spacing } from '@/theme/tokens';
 
 const MUSCLE_GROUPS = Object.keys(MUSCLE_LABELS) as MuscleGroup[];
@@ -33,19 +32,24 @@ const EQUIPMENT_TYPES = Object.keys(EQUIPMENT_LABELS) as Equipment[];
 
 /**
  * The exercise library from the PRD's nav table — and, opened with one of
- * three optional params, the same screen doubles as a picker for three
- * different callers instead of three near-identical screens:
+ * four optional params, the same screen doubles as a picker for four
+ * different callers instead of four near-identical screens:
  *
  *  - `dayId` — the day editor's "add from library" (Block 9)
- *  - `workoutId` — the logging pager's "add exercise" (today-only, ad-hoc)
- *  - `swapId` — the logging pager's "swap exercise" (today-only, a
- *    `workout_exercise` id, replacing what's trained in that slot)
+ *  - `workoutId` — the logging pager's "add exercise", ad-hoc for today AND
+ *    (always, unprompted) appended to the running workout's split day too
+ *  - `swapId` — the logging pager's "swap exercise" — a `workout_exercise`
+ *    id, replacing what's trained in that slot for today, and (whenever that
+ *    slot has a known split link) the same slot in the split
  *  - `swapDayExerciseId` — the Today screen's "swap exercise", before any
  *    workout exists — a `split_day_exercises` id, so this one edits the
  *    split itself and persists to every future suggestion of this day
  *
  * At most one of these is ever set by a given caller; browse mode (none set)
  * makes a tap on a row a no-op, since there's no exercise-detail screen yet.
+ * Both swap modes pre-filter the muscle-group chip to the outgoing
+ * exercise's muscle group and exclude that exercise from the list, so the
+ * picker opens showing likely substitutes first without hiding anything.
  */
 export default function ExercisesScreen() {
   const insets = useSafeAreaInsets();
@@ -65,20 +69,46 @@ export default function ExercisesScreen() {
   const [equipment, setEquipment] = useState<Equipment | null>(null);
   const [adding, setAdding] = useState<string | null>(null);
   const [addToSplitDayId, setAddToSplitDayId] = useState<string | null>(null);
-  const [addToSplitDayName, setAddToSplitDayName] = useState<string | null>(null);
+  const [excludeExerciseId, setExcludeExerciseId] = useState<string | null>(null);
+  const [swapSourceSplitDayExerciseId, setSwapSourceSplitDayExerciseId] = useState<string | null>(null);
 
-  // The ad-hoc-add flow (§5) offers to also add the exercise to the split
+  // The ad-hoc-add flow (§5) always also adds the exercise to the split
   // permanently — that needs the running workout's `split_day_id`, which
   // isn't in the route params (only its id is), so it's fetched once here.
   useEffect(() => {
     if (!workoutId) return;
     void getWorkout(workoutId).then((w) => {
-      if (w?.split_day_id) {
-        setAddToSplitDayId(w.split_day_id);
-        setAddToSplitDayName(w.day_name);
-      }
+      if (w?.split_day_id) setAddToSplitDayId(w.split_day_id);
     });
   }, [workoutId]);
+
+  // Workout-side swap: look up the outgoing workout_exercise to exclude it
+  // from the list, prefill the muscle-group filter with its muscle group,
+  // and carry its split link forward so the pick can sync the split slot.
+  useEffect(() => {
+    if (!swapId) return;
+    void getWorkoutExercise(swapId).then((we) => {
+      if (!we) return;
+      setExcludeExerciseId(we.exercise_id);
+      setSwapSourceSplitDayExerciseId(we.source_split_day_exercise_id);
+      void getExercise(we.exercise_id).then((ex) => {
+        if (ex) setMuscle(ex.muscle_group);
+      });
+    });
+  }, [swapId]);
+
+  // Split-side swap (Today screen, pre-workout): same exclusion/prefill,
+  // no session link to carry — this one already edits the split directly.
+  useEffect(() => {
+    if (!swapDayExerciseId) return;
+    void getDayExercise(swapDayExerciseId).then((de) => {
+      if (!de) return;
+      setExcludeExerciseId(de.exercise_id);
+      void getExercise(de.exercise_id).then((ex) => {
+        if (ex) setMuscle(ex.muscle_group);
+      });
+    });
+  }, [swapDayExerciseId]);
 
   // Reload on every focus, not just mount — returning here after "+ New
   // Exercise" (a separate pushed screen) must show the exercise you just
@@ -104,12 +134,13 @@ export default function ExercisesScreen() {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return all.filter((ex) => {
+      if (excludeExerciseId && ex.id === excludeExerciseId) return false;
       if (q && !ex.name.toLowerCase().includes(q)) return false;
       if (muscle && ex.muscle_group !== muscle) return false;
       if (equipment && ex.equipment !== equipment) return false;
       return true;
     });
-  }, [all, search, muscle, equipment]);
+  }, [all, search, muscle, equipment, excludeExerciseId]);
 
   const handlePick = useCallback(
     async (exercise: Exercise) => {
@@ -121,21 +152,17 @@ export default function ExercisesScreen() {
           await swapExerciseInDay(swapDayExerciseId, exercise.id);
         } else if (swapId) {
           await swapWorkoutExercise(swapId, exercise.id);
-        } else if (workoutId) {
-          await addExerciseToWorkout(workoutId, exercise.id, { isAdHoc: true });
-          if (addToSplitDayId) {
-            Alert.alert(
-              'Add to your split too?',
-              `Keep "${exercise.name}" in "${addToSplitDayName}" for future workouts, or just use it for today?`,
-              [
-                { text: 'Just Today', style: 'cancel' },
-                {
-                  text: 'Add Permanently',
-                  onPress: () => void addExerciseToDay(addToSplitDayId, exercise.id),
-                },
-              ],
-            );
+          if (swapSourceSplitDayExerciseId) {
+            await swapExerciseInDay(swapSourceSplitDayExerciseId, exercise.id);
           }
+        } else if (workoutId) {
+          // Always synced to the split when the running workout has one —
+          // add to the split first so its new row id can be carried onto the
+          // workout-side row, letting a later swap/reorder/remove find it.
+          const sourceSplitDayExerciseId = addToSplitDayId
+            ? await addExerciseToDay(addToSplitDayId, exercise.id)
+            : null;
+          await addExerciseToWorkout(workoutId, exercise.id, { isAdHoc: true, sourceSplitDayExerciseId });
         } else if (dayId) {
           await addExerciseToDay(dayId, exercise.id);
         }
@@ -144,7 +171,7 @@ export default function ExercisesScreen() {
         setAdding(null);
       }
     },
-    [isPicker, adding, dayId, workoutId, swapId, swapDayExerciseId, addToSplitDayId, addToSplitDayName, router],
+    [isPicker, adding, dayId, workoutId, swapId, swapDayExerciseId, addToSplitDayId, swapSourceSplitDayExerciseId, router],
   );
 
   const title =
@@ -187,6 +214,7 @@ export default function ExercisesScreen() {
         value={muscle}
         onChange={setMuscle}
       />
+      <View style={styles.chipGap} />
       <FilterChipRow
         label="All equipment"
         options={EQUIPMENT_TYPES}
@@ -292,7 +320,8 @@ const styles = StyleSheet.create({
     fontSize: font.body,
     paddingHorizontal: spacing.lg,
   },
-  chipRow: { gap: spacing.sm, paddingHorizontal: spacing.lg, paddingBottom: spacing.sm },
+  chipRow: { gap: spacing.sm, paddingHorizontal: spacing.lg },
+  chipGap: { height: spacing.md },
   chip: {
     minHeight: 40,
     paddingHorizontal: spacing.md,
@@ -306,7 +335,7 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   chipText: { color: colors.textSecondary, fontSize: font.caption, fontWeight: '700' },
   chipTextActive: { color: colors.onAccent },
-  list: { padding: spacing.lg, paddingTop: spacing.xs, paddingBottom: spacing.xxxl },
+  list: { padding: spacing.lg, paddingTop: spacing.md, paddingBottom: spacing.xxxl },
   card: { padding: spacing.md },
   row: {
     flexDirection: 'row',

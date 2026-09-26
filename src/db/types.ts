@@ -25,6 +25,21 @@ export type Equipment =
   | 'other';
 
 export type ScheduleMode = 'rotation' | 'calendar';
+
+/**
+ * What a logged `weight_kg` means for a given exercise.
+ *
+ * `total` — the number is the whole load: 40 kg on your shoulders for a squat.
+ * `per_side` — the number is the load on ONE side: 7.5 kg of Hammer Curl is
+ * 7.5 in each hand, so 15 kg is actually moving.
+ *
+ * Volume multiplies by 2 for `per_side` (see `volumeFactor`); PRs and progress
+ * charts deliberately do not, so a PR always reads as a weight you really
+ * handled. Lives on the exercise, not the set, so one toggle reinterprets that
+ * exercise's whole history consistently instead of leaving a step in the chart
+ * on the day it was flipped.
+ */
+export type WeightMode = 'total' | 'per_side';
 export type SetType = 'working' | 'warmup';
 export type Units = 'kg' | 'lb';
 
@@ -35,8 +50,11 @@ export interface Exercise {
   equipment: Equipment;
   is_custom: number;
   rep_chips: string | null;
+  /** The sticky per-exercise remark: setup cues that outlive any one session. */
   notes: string | null;
   archived: number;
+  /** Whether a logged weight is the total load or the load per side. v3+. */
+  weight_mode: WeightMode;
 }
 
 export interface Split {
@@ -77,6 +95,8 @@ export interface WorkoutExercise {
   is_ad_hoc: number;
   skipped: number;
   notes: string | null;
+  /** The split_day_exercises row this was copied from, or later synced to. Null before v2 or if never linked to a split. */
+  source_split_day_exercise_id: string | null;
 }
 
 export interface WorkoutSet {

@@ -7,10 +7,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DragList } from '@/components/DragList';
 import { EmptyState } from '@/components/EmptyState';
 import { GlassSurface } from '@/components/GlassSurface';
+import { WeightModeChip } from '@/components/WeightModeChip';
 import type { Exercise, SplitDay } from '@/db/types';
 import * as haptics from '@/lib/haptics';
 import { exercisesPickerHref } from '@/lib/routes';
-import { getExercisesByIds } from '@/queries/exercises';
+import { toggledMode } from '@/lib/weightMode';
+import { getExercisesByIds, updateExercise } from '@/queries/exercises';
 import {
   getSplitDays,
   getDayExercises,
@@ -75,6 +77,26 @@ export default function DayEditorScreen() {
     await reorderDayExercises(next.map((r) => r.dayExerciseId));
   };
 
+  /**
+   * Flips the exercise's weight mode. This writes to the EXERCISE, not to this
+   * day's slot — so it follows the exercise into every split, every future
+   * session, and the reading of all its past sets. That's what makes it a
+   * set-once setting rather than something toggled per workout.
+   *
+   * Local state updates optimistically first so the chip flips on the tap
+   * itself; the same exercise can appear twice in one day, hence the map
+   * over every row rather than just the one tapped.
+   */
+  const handleToggleMode = async (row: Row) => {
+    const next = toggledMode(row.exercise.weight_mode);
+    setRows((prev) =>
+      prev.map((r) =>
+        r.exercise.id === row.exercise.id ? { ...r, exercise: { ...r.exercise, weight_mode: next } } : r,
+      ),
+    );
+    await updateExercise(row.exercise.id, { weight_mode: next });
+  };
+
   const handleRemove = async (row: Row) => {
     haptics.warn();
     await removeExerciseFromDay(row.dayExerciseId);
@@ -136,21 +158,29 @@ export default function DayEditorScreen() {
             <MaterialIcons name="drag-handle" size={14} color={colors.textMuted} />
             <Text style={styles.sectionLabel}>to reorder</Text>
           </View>
+          <Text style={styles.modeHint}>
+            Tap TOTAL / EACH ARM to set how you enter weight for that exercise. It sticks everywhere.
+          </Text>
           <DragList
             data={rows}
             keyExtractor={(r) => r.dayExerciseId}
             itemHeight={ROW_HEIGHT}
             onReorder={handleReorder}
             renderItem={(row) => (
-              <GlassSurface style={styles.row}>
-                <View style={styles.rowInfo}>
-                  <Text style={styles.rowName}>{row.exercise.name}</Text>
-                  <Text style={styles.rowMeta}>{row.exercise.muscle_group}</Text>
-                </View>
-                <Pressable onPress={() => handleRemove(row)} hitSlop={8}>
-                  <Ionicons name="close" size={18} color={colors.textMuted} />
-                </Pressable>
-              </GlassSurface>
+              <View style={styles.rowWrap}>
+                <GlassSurface style={styles.row}>
+                  <View style={styles.rowInfo}>
+                    <Text style={styles.rowName} numberOfLines={1}>
+                      {row.exercise.name}
+                    </Text>
+                    <Text style={styles.rowMeta}>{row.exercise.muscle_group}</Text>
+                  </View>
+                  <WeightModeChip exercise={row.exercise} onToggle={() => void handleToggleMode(row)} />
+                  <Pressable onPress={() => handleRemove(row)} hitSlop={8} style={styles.remove}>
+                    <Ionicons name="close" size={18} color={colors.textMuted} />
+                  </Pressable>
+                </GlassSurface>
+              </View>
             )}
           />
         </View>
@@ -194,6 +224,8 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: 'uppercase',
   },
+  modeHint: { color: colors.textMuted, fontSize: font.caption },
+  rowWrap: { flex: 1, paddingVertical: 6 },
   row: {
     flex: 1,
     flexDirection: 'row',
@@ -201,7 +233,8 @@ const styles = StyleSheet.create({
     padding: spacing.md,
     borderRadius: radius.md,
   },
-  rowInfo: { flex: 1 },
+  rowInfo: { flex: 1, marginRight: spacing.sm },
+  remove: { marginLeft: spacing.md },
   rowName: { color: colors.text, fontSize: font.body, fontWeight: '600' },
   rowMeta: { color: colors.textSecondary, fontSize: font.caption, textTransform: 'capitalize', marginTop: 1 },
   footer: { padding: spacing.lg, paddingTop: spacing.sm },

@@ -12,6 +12,7 @@ import type { AppSettings, Exercise, Workout, WorkoutExercise, WorkoutSet } from
 import * as haptics from '@/lib/haptics';
 import { formatDuration, formatLongDate } from '@/lib/format';
 import { displayStep, formatWeight, fromDisplay, toDisplay, UNIT_LABEL } from '@/lib/units';
+import { weightCaption, weightSuffix } from '@/lib/weightMode';
 import { getExercisesByIds } from '@/queries/exercises';
 import { getSettings } from '@/queries/settings';
 import {
@@ -107,11 +108,11 @@ export default function SessionDetailScreen() {
     }
   };
 
-  const openMenu = (set: WorkoutSet, label: string) => {
+  const openMenu = (set: WorkoutSet, label: string, suffix: string) => {
     if (!settings) return;
     Alert.alert(
       label,
-      `${formatWeight(toDisplay(set.weight_kg, settings.units))} ${UNIT_LABEL[settings.units]} × ${set.reps}`,
+      `${formatWeight(toDisplay(set.weight_kg, settings.units))} ${suffix} × ${set.reps}`,
       [
         { text: 'Edit', onPress: () => beginEdit(set) },
         {
@@ -193,9 +194,21 @@ export default function SessionDetailScreen() {
           const label = (set: WorkoutSet, index: number, drop: boolean) =>
             drop ? `${section.exercise.name}, drop` : `${section.exercise.name}, set ${index}`;
 
+          // History has no stepper caption above its rows, so the row suffix
+          // ("kg/arm") is the only thing saying what a per-side number means.
+          const rowUnit = weightSuffix(section.exercise, unitLabel);
+          const editUnit = weightCaption(section.exercise, unitLabel);
+
           return (
             <GlassSurface key={section.workoutExercise.id} style={styles.card}>
-              <Text style={styles.exerciseName}>{section.exercise.name}</Text>
+              <View>
+                <Text style={styles.exerciseName}>{section.exercise.name}</Text>
+                {/* The sticky remark reads as it is NOW, not as it was on this
+                    date — it's one note per exercise, by the user's choice. */}
+                {section.exercise.notes ? (
+                  <Text style={styles.remark}>{section.exercise.notes}</Text>
+                ) : null}
+              </View>
               {topLevel.map((set, index) => (
                 <View key={set.id} style={styles.setGroup}>
                   {editingSetId === set.id ? (
@@ -203,7 +216,7 @@ export default function SessionDetailScreen() {
                       weight={draftWeight}
                       reps={draftReps}
                       step={step}
-                      unitLabel={unitLabel}
+                      unitLabel={editUnit}
                       onWeightChange={setDraftWeight}
                       onRepsChange={setDraftReps}
                       onCancel={cancelEdit}
@@ -214,9 +227,9 @@ export default function SessionDetailScreen() {
                     <SetRow
                       index={index + 1}
                       set={set}
-                      unitLabel={unitLabel}
+                      unitLabel={rowUnit}
                       units={settings.units}
-                      onMenu={() => openMenu(set, label(set, index + 1, false))}
+                      onMenu={() => openMenu(set, label(set, index + 1, false), rowUnit)}
                     />
                   )}
                   {childrenOf(set.id).map((child) =>
@@ -226,7 +239,7 @@ export default function SessionDetailScreen() {
                         weight={draftWeight}
                         reps={draftReps}
                         step={step}
-                        unitLabel={unitLabel}
+                        unitLabel={editUnit}
                         onWeightChange={setDraftWeight}
                         onRepsChange={setDraftReps}
                         onCancel={cancelEdit}
@@ -238,9 +251,9 @@ export default function SessionDetailScreen() {
                       <SetRow
                         key={child.id}
                         set={child}
-                        unitLabel={unitLabel}
+                        unitLabel={rowUnit}
                         units={settings.units}
-                        onMenu={() => openMenu(child, label(child, 0, true))}
+                        onMenu={() => openMenu(child, label(child, 0, true), rowUnit)}
                         drop
                       />
                     ),
@@ -355,6 +368,12 @@ const styles = StyleSheet.create({
   duration: { color: colors.accent, fontSize: font.caption, fontWeight: '700', marginTop: 2 },
   card: { padding: spacing.lg, gap: spacing.md },
   exerciseName: { color: colors.text, fontSize: font.body, fontWeight: '700', marginBottom: spacing.xs },
+  remark: {
+    color: colors.textSecondary,
+    fontSize: font.caption,
+    fontStyle: 'italic',
+    marginBottom: spacing.xs,
+  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

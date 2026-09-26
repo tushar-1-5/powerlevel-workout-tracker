@@ -12,6 +12,22 @@
  * pounds exist only as a display conversion.
  */
 
+import { PER_SIDE_SEED_NAMES } from './seed/weightModes';
+
+/**
+ * The v3 backfill's `IN (...)` list, as SQL string literals.
+ *
+ * Reads the same frozen set the first-launch seeder uses, so an upgraded install
+ * and a fresh one end up with identical defaults. They genuinely need both
+ * paths: `ensureSeeded` no-ops when the table has rows, so on an upgrade this
+ * UPDATE is what applies the presets — while on a fresh install migrations run
+ * against an empty table, this matches nothing, and the seeder's INSERT carries
+ * the mode instead.
+ */
+function perSideNameList(): string {
+  return [...PER_SIDE_SEED_NAMES].map((name) => `'${name.replace(/'/g, "''")}'`).join(', ');
+}
+
 /** Bump by appending to this array. Never edit a released migration in place. */
 export const MIGRATIONS: string[][] = [
   // ---------------------------------------------------------------- v1
@@ -155,5 +171,38 @@ export const MIGRATIONS: string[][] = [
       key   TEXT PRIMARY KEY NOT NULL,
       value TEXT
     );`,
+  ],
+
+  // ---------------------------------------------------------------- v2
+  // Links a session's copy of an exercise back to the split-day slot it was
+  // copied from (or later synced to), so mid-workout add/swap/reorder/remove
+  // can write the same change back into the split. Nullable and no default:
+  // every row created before this migration has no known split link, which
+  // is the correct, honest value for it — not an error state.
+  [
+    `ALTER TABLE workout_exercises ADD COLUMN source_split_day_exercise_id TEXT;`,
+  ],
+
+  // ---------------------------------------------------------------- v3
+  // Whether an exercise's logged weight is the total load or the load per side.
+  // Defaults to 'total' — the literal meaning every already-logged row had
+  // before this column existed — and the backfill below then flips the stock
+  // exercises where 'per_side' is the honest reading (a pair of dumbbells, a
+  // single arm on a cable).
+  //
+  // Matched by `name`, which is already this schema's cross-reference for
+  // exercises: `seed/splits.ts` resolves its templates by name too. Custom rows
+  // are included deliberately — someone who typed their own "Hammer Curl" meant
+  // the same exercise and wants the same default.
+  //
+  // `updated_at`/`dirty` are bumped so the Phase 4 sync push queue sees rows it
+  // needs to send, same as any ordinary write would.
+  [
+    `ALTER TABLE exercises ADD COLUMN weight_mode TEXT NOT NULL DEFAULT 'total';`,
+    `UPDATE exercises
+        SET weight_mode = 'per_side',
+            updated_at = CAST(strftime('%s','now') AS INTEGER) * 1000,
+            dirty = 1
+      WHERE name IN (${perSideNameList()});`,
   ],
 ];

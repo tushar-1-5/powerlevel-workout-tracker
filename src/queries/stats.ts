@@ -1,4 +1,5 @@
 import { getDb } from '@/db/client';
+import type { MuscleGroup, WeightMode } from '@/db/types';
 import { formatMonthYear, startOfDay, toDateKey } from '@/lib/format';
 import { round2 } from '@/lib/units';
 
@@ -63,6 +64,10 @@ export async function getExercisePR(exerciseId: string): Promise<ExercisePR | nu
 export interface AllTimePR {
   exerciseId: string;
   exerciseName: string;
+  /** For grouping the full PR board by muscle, and choosing "arm" vs "leg" in the label. */
+  muscleGroup: MuscleGroup;
+  /** Display only: a per-side PR is shown as typed, suffixed "/arm" — never doubled. */
+  weightMode: WeightMode;
   weightKg: number;
   reps: number;
   achievedAt: number;
@@ -80,12 +85,15 @@ export async function getAllTimePRs(): Promise<AllTimePR[]> {
   const rows = await getDb().getAllAsync<{
     exercise_id: string;
     exercise_name: string;
+    muscle_group: MuscleGroup;
+    weight_mode: WeightMode;
     weight_kg: number;
     reps: number;
     achieved_at: number;
   }>(
     `WITH ranked AS (
        SELECT we.exercise_id AS exercise_id, ex.name AS exercise_name,
+              ex.muscle_group AS muscle_group, ex.weight_mode AS weight_mode,
               s.weight_kg AS weight_kg, s.reps AS reps, w.started_at AS achieved_at,
               ROW_NUMBER() OVER (
                 PARTITION BY we.exercise_id
@@ -99,7 +107,7 @@ export async function getAllTimePRs(): Promise<AllTimePR[]> {
           AND we.deleted_at IS NULL AND s.deleted_at IS NULL
           AND s.set_type = 'working' AND s.parent_set_id IS NULL
      )
-     SELECT exercise_id, exercise_name, weight_kg, reps, achieved_at
+     SELECT exercise_id, exercise_name, muscle_group, weight_mode, weight_kg, reps, achieved_at
        FROM ranked WHERE rn = 1
       ORDER BY exercise_name COLLATE NOCASE ASC;`,
   );
@@ -107,6 +115,8 @@ export async function getAllTimePRs(): Promise<AllTimePR[]> {
   return rows.map((r) => ({
     exerciseId: r.exercise_id,
     exerciseName: r.exercise_name,
+    muscleGroup: r.muscle_group,
+    weightMode: r.weight_mode,
     weightKg: r.weight_kg,
     reps: r.reps,
     achievedAt: r.achieved_at,
@@ -126,15 +136,26 @@ function weekStartOf(ms: number): number {
   return d.getTime();
 }
 
-/** Total working-set volume per week (drop-chain links included, same rule as the finish summary), oldest first. */
+/**
+ * Total working-set volume per week (drop-chain links included, same rule as
+ * the finish summary), oldest first.
+ *
+ * Per-side exercises count twice — 7.5 kg × 10 of Hammer Curl is 150 kg, since
+ * both arms did it. The CASE is the SQL twin of `volumeFactor` in
+ * `lib/weightMode.ts`; keep the two in step. It reads the exercise's CURRENT
+ * mode, so flipping a toggle re-reads that exercise's whole history under the
+ * new rule (the behaviour chosen over snapshotting the mode onto every set).
+ */
 export async function getWeeklyVolume(weeks = 8): Promise<WeekVolume[]> {
   const since = weekStartOf(Date.now() - weeks * 7 * 86_400_000);
 
   const rows = await getDb().getAllAsync<{ workout_id: string; started_at: number; volume: number | null }>(
-    `SELECT w.id AS workout_id, w.started_at AS started_at, SUM(s.weight_kg * s.reps) AS volume
+    `SELECT w.id AS workout_id, w.started_at AS started_at,
+            SUM(s.weight_kg * s.reps * CASE WHEN ex.weight_mode = 'per_side' THEN 2 ELSE 1 END) AS volume
        FROM sets s
        JOIN workout_exercises we ON we.id = s.workout_exercise_id
        JOIN workouts w ON w.id = we.workout_id
+       JOIN exercises ex ON ex.id = we.exercise_id
       WHERE w.deleted_at IS NULL AND w.finished_at IS NOT NULL
         AND we.deleted_at IS NULL AND s.deleted_at IS NULL
         AND s.set_type = 'working'

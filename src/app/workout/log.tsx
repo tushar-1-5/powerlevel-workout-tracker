@@ -3,6 +3,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Modal,
   Pressable,
@@ -23,17 +24,21 @@ import { ExercisePage } from '@/components/ExercisePageV2';
 import { GlassSheen, GlassSurface } from '@/components/GlassSurface';
 import { OverflowMenu } from '@/components/OverflowMenu';
 import { PrimaryButton } from '@/components/PrimaryButton';
+import { RemarkSheet } from '@/components/RemarkSheet';
 import type { AppSettings, Exercise, Workout, WorkoutExercise } from '@/db/types';
 import { useWorkoutTimer } from '@/hooks/useWorkoutTimer';
 import { formatDuration } from '@/lib/format';
 import * as haptics from '@/lib/haptics';
 import { TODAY, exercisesAddToWorkoutHref, exercisesSwapHref } from '@/lib/routes';
-import { getExercisesByIds } from '@/queries/exercises';
+import { toggledMode, weightModeMenuLabel } from '@/lib/weightMode';
+import { getExercisesByIds, updateExercise } from '@/queries/exercises';
 import { getSettings } from '@/queries/settings';
+import { removeExerciseFromDay, reorderDayExercises } from '@/queries/splits';
 import {
   finishWorkout,
   getWorkout,
   getWorkoutExercises,
+  removeExerciseFromWorkout,
   reorderWorkoutExercises,
 } from '@/queries/workouts';
 import { colors, font, glass, radius, spacing } from '@/theme/tokens';
@@ -72,6 +77,7 @@ export default function WorkoutLogScreen() {
   const [pageIndex, setPageIndex] = useState(0);
   const [finishing, setFinishing] = useState(false);
   const [reordering, setReordering] = useState(false);
+  const [editingRemark, setEditingRemark] = useState(false);
 
   // `null` when backfilling — the hook's own null-guard returns a static
   // '0:00' instead of ticking from a past `started_at`. What actually
@@ -168,6 +174,70 @@ export default function WorkoutLogScreen() {
     router.replace({ pathname: '/workout/summary', params: { workoutId: workout.id } });
   }, [workout, finishing, backfillDurationSeconds, backfillDurationUnknown, router]);
 
+  const doRemove = useCallback(async (we: WorkoutExercise) => {
+    await removeExerciseFromWorkout(we.id);
+    if (we.source_split_day_exercise_id) {
+      await removeExerciseFromDay(we.source_split_day_exercise_id);
+    }
+    setWorkoutExercises((prev) => {
+      const removedIndex = prev.findIndex((x) => x.id === we.id);
+      const next = prev.filter((x) => x.id !== we.id);
+      const newIndex = Math.max(0, Math.min(removedIndex, next.length - 1));
+      setPageIndex(newIndex);
+      requestAnimationFrame(() => {
+        listRef.current?.scrollToIndex({ index: newIndex, animated: false });
+      });
+      return next;
+    });
+  }, []);
+
+  /**
+   * Both per-exercise settings reachable from the overflow menu — weight mode
+   * and the remark — are columns on `exercises`, so they go through the same
+   * `updateExercise` writer the day editor uses, and they're sticky: the next
+   * session, and every past one, reads the same row.
+   *
+   * After the write, `exerciseMap` is patched in place rather than reloaded.
+   * Each pager page receives its `exercise` from this map as a prop, so the
+   * patch re-renders the open page — new stepper caption, new set-row suffix —
+   * without remounting it, which would throw away whatever weight/reps you'd
+   * dialled in but not yet logged.
+   */
+  const patchExercise = useCallback(
+    async (exercise: Exercise, patch: Partial<Pick<Exercise, 'weight_mode' | 'notes'>>) => {
+      setExerciseMap((prev) => {
+        const next = new Map(prev);
+        next.set(exercise.id, { ...exercise, ...patch });
+        return next;
+      });
+      await updateExercise(exercise.id, patch);
+    },
+    [],
+  );
+
+  const handleRemoveExercise = useCallback(() => {
+    const we = workoutExercises[pageIndex] ?? null;
+    if (!we || workoutExercises.length <= 1) return;
+    const name = exerciseMap.get(we.exercise_id)?.name ?? 'This exercise';
+    Alert.alert(
+      `Remove ${name}?`,
+      we.source_split_day_exercise_id
+        ? "This removes it from today's workout and from your split."
+        : "This removes it from today's workout.",
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            haptics.warn();
+            void doRemove(we);
+          },
+        },
+      ],
+    );
+  }, [workoutExercises, pageIndex, exerciseMap, doRemove]);
+
   if (loading) {
     return (
       <View style={[styles.screen, styles.centre]}>
@@ -197,12 +267,27 @@ export default function WorkoutLogScreen() {
 
   const currentWorkoutExercise = workoutExercises[pageIndex] ?? null;
   const menuItems = [
+    // Per-exercise settings first: they're the ones reached for mid-set.
+    ...(currentExercise
+      ? [
+          {
+            label: weightModeMenuLabel(currentExercise),
+            onPress: () => {
+              void patchExercise(currentExercise, { weight_mode: toggledMode(currentExercise.weight_mode) });
+            },
+          },
+          { label: currentExercise.notes ? 'Edit Remarks' : 'Add Remarks', onPress: () => setEditingRemark(true) },
+        ]
+      : []),
     ...(currentWorkoutExercise
       ? [{ label: 'Swap Exercise', onPress: () => router.push(exercisesSwapHref(currentWorkoutExercise.id)) }]
       : []),
     { label: 'Add Exercise', onPress: () => router.push(exercisesAddToWorkoutHref(workout.id)) },
     ...(workoutExercises.length > 1
-      ? [{ label: 'Reorder Exercises', onPress: () => setReordering(true) }]
+      ? [
+          { label: 'Reorder Exercises', onPress: () => setReordering(true) },
+          { label: 'Remove Exercise', onPress: handleRemoveExercise },
+        ]
       : []),
   ];
 
@@ -251,6 +336,21 @@ export default function WorkoutLogScreen() {
           </Pressable>
         </View>
 
+        {/* The sticky remark, always in view for the page you're on. It lives
+            here in the fixed header rather than inside ExercisePage: that
+            page's entry section is a sticky header already fighting for
+            height, and anywhere in its scroll area would scroll out of reach
+            exactly when the set list gets long. One line, truncated — tap it
+            for the whole thing. */}
+        {currentExercise?.notes ? (
+          <Pressable onPress={() => setEditingRemark(true)} hitSlop={6} style={styles.remark}>
+            <Ionicons name="document-text-outline" size={14} color={colors.accent} />
+            <Text style={styles.remarkText} numberOfLines={1} allowFontScaling={false}>
+              {currentExercise.notes}
+            </Text>
+          </Pressable>
+        ) : null}
+
         <View style={styles.dots}>
           {workoutExercises.map((we, i) => (
             <View key={we.id} style={[styles.dot, i === pageIndex && styles.dotActive]} />
@@ -264,6 +364,11 @@ export default function WorkoutLogScreen() {
         data={workoutExercises}
         keyExtractor={(we) => we.id}
         renderItem={renderPage}
+        // FlatList skips re-rendering cells whose `data` item is unchanged.
+        // A weight-mode flip or remark edit changes `exerciseMap`, not
+        // `workoutExercises`, so this is what tells it the open page's
+        // `exercise` prop is stale.
+        extraData={exerciseMap}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
@@ -281,6 +386,16 @@ export default function WorkoutLogScreen() {
         <PrimaryButton label="Finish Workout" onPress={handleFinish} loading={finishing} compact />
       </View>
 
+      {currentExercise ? (
+        <RemarkSheet
+          visible={editingRemark}
+          exerciseName={currentExercise.name}
+          remark={currentExercise.notes}
+          onClose={() => setEditingRemark(false)}
+          onSave={(remark) => patchExercise(currentExercise, { notes: remark })}
+        />
+      ) : null}
+
       <Modal visible={reordering} transparent animationType="slide" onRequestClose={() => setReordering(false)}>
         <ReorderSheetBody
           workoutExercises={workoutExercises}
@@ -290,6 +405,12 @@ export default function WorkoutLogScreen() {
           onReorder={(next) => {
             setWorkoutExercises(next);
             void reorderWorkoutExercises(next.map((we) => we.id));
+            const linkedIds = next
+              .map((we) => we.source_split_day_exercise_id)
+              .filter((id): id is string => id !== null);
+            if (linkedIds.length > 0) {
+              void reorderDayExercises(linkedIds);
+            }
           }}
         />
       </Modal>
@@ -394,6 +515,10 @@ const styles = StyleSheet.create({
   navArrow: { width: 28, alignItems: 'center', justifyContent: 'center' },
   exerciseName: { flex: 1, color: colors.text, fontSize: font.title, fontWeight: '700' },
   pagerCount: { color: colors.textSecondary, fontSize: font.caption, fontWeight: '600' },
+  // Indented to line up with the exercise name, past the 28px back chevron
+  // and the pager row's 8px gap.
+  remark: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingLeft: 36, paddingRight: spacing.sm },
+  remarkText: { flex: 1, color: colors.textSecondary, fontSize: font.caption, fontStyle: 'italic' },
   dots: { flexDirection: 'row', gap: 6, justifyContent: 'center' },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.border },
   dotActive: { backgroundColor: colors.accent },

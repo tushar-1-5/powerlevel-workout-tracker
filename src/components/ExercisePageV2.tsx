@@ -10,6 +10,7 @@ import { Stepper } from '@/components/Stepper';
 import type { AppSettings, Exercise, WorkoutSet } from '@/db/types';
 import * as haptics from '@/lib/haptics';
 import { displayStep, formatWeight, fromDisplay, toDisplay, UNIT_LABEL } from '@/lib/units';
+import { weightCaption, weightSuffix } from '@/lib/weightMode';
 import {
   deleteSet,
   getBestWeightKg,
@@ -170,7 +171,7 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
   const openMenu = useCallback(
     (set: WorkoutSet) => {
       const label = setLabel(set);
-      Alert.alert(label, `${formatWeight(toDisplay(set.weight_kg, settings.units))} ${UNIT_LABEL[settings.units]} × ${set.reps}`, [
+      Alert.alert(label, `${formatWeight(toDisplay(set.weight_kg, settings.units))} ${weightSuffix(exercise, UNIT_LABEL[settings.units])} × ${set.reps}`, [
         { text: 'Edit', onPress: () => beginEdit(set) },
         {
           text: 'Delete',
@@ -183,7 +184,7 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
         { text: 'Cancel', style: 'cancel' },
       ]);
     },
-    [setLabel, settings.units, beginEdit, refresh],
+    [setLabel, settings.units, beginEdit, refresh, exercise],
   );
 
   const cancelEntry = useCallback(() => {
@@ -307,7 +308,11 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
               min={0}
               max={500}
               format={formatWeight}
-              unitLabel={unitLabel}
+              // "kg · each arm" on a per-side exercise, so the number being
+              // dialled in says what it means before it's logged. The
+              // exercise prop is live — flipping the mode from log.tsx's
+              // overflow menu re-renders this caption without a remount.
+              unitLabel={weightCaption(exercise, unitLabel)}
               allowDecimal
               compact
               accessibilityLabel="weight"
@@ -381,12 +386,20 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
                 <SetRow
                   index={index + 1}
                   set={set}
+                  exercise={exercise}
                   settings={settings}
                   onMenu={() => openMenu(set)}
                   onDrop={() => beginDrop(set)}
                 />
                 {childrenOf(set.id).map((child) => (
-                  <SetRow key={child.id} set={child} settings={settings} onMenu={() => openMenu(child)} drop />
+                  <SetRow
+                    key={child.id}
+                    set={child}
+                    exercise={exercise}
+                    settings={settings}
+                    onMenu={() => openMenu(child)}
+                    drop
+                  />
                 ))}
               </View>
             ))}
@@ -457,6 +470,8 @@ function TogglePill({ label, active, onPress }: TogglePillProps) {
 
 interface SetRowProps {
   set: WorkoutSet;
+  /** Only read for its weight mode, to suffix the weight "kg/arm" when per-side. */
+  exercise: Exercise;
   settings: AppSettings;
   onMenu: () => void;
   onDrop?: () => void;
@@ -464,9 +479,9 @@ interface SetRowProps {
   drop?: boolean;
 }
 
-function SetRow({ set, settings, onMenu, onDrop, index, drop }: SetRowProps) {
+function SetRow({ set, exercise, settings, onMenu, onDrop, index, drop }: SetRowProps) {
   const weightText = formatWeight(toDisplay(set.weight_kg, settings.units));
-  const unitLabel = UNIT_LABEL[settings.units];
+  const unitLabel = weightSuffix(exercise, UNIT_LABEL[settings.units]);
 
   const content = (
     <>

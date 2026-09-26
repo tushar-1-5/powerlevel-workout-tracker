@@ -4,6 +4,7 @@ import { addExerciseToDay, createSplit, createSplitDay } from '@/queries/splits'
 import { listExercises } from '@/queries/exercises';
 
 import { SEED_EXERCISES } from './exercises';
+import { PER_SIDE_SEED_NAMES } from './weightModes';
 import type { SeedSplit } from './splits';
 
 /**
@@ -28,11 +29,23 @@ export async function ensureSeeded(): Promise<number> {
   // one commit and effectively instant.
   await db.withTransactionAsync(async () => {
     for (const [name, muscleGroup, equipment] of SEED_EXERCISES) {
+      // `weight_mode` is set here rather than left to migration v3's backfill:
+      // migrations run before this on a fresh install, so that UPDATE sees an
+      // empty table and matches nothing. See `perSideNameList` in migrations.ts.
       await db.runAsync(
         `INSERT INTO exercises
-           (id, name, muscle_group, equipment, is_custom, archived, created_at, updated_at, dirty)
-         VALUES (?, ?, ?, ?, 0, 0, ?, ?, 1);`,
-        [newId(), name, muscleGroup, equipment, now, now],
+           (id, name, muscle_group, equipment, is_custom, archived, weight_mode,
+            created_at, updated_at, dirty)
+         VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, 1);`,
+        [
+          newId(),
+          name,
+          muscleGroup,
+          equipment,
+          PER_SIDE_SEED_NAMES.has(name) ? 'per_side' : 'total',
+          now,
+          now,
+        ],
       );
     }
   });

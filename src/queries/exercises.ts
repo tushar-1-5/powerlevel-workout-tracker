@@ -1,12 +1,13 @@
 import { getDb } from '@/db/client';
-import type { Equipment, Exercise, MuscleGroup } from '@/db/types';
+import type { Equipment, Exercise, MuscleGroup, WeightMode } from '@/db/types';
 import { newId } from '@/lib/id';
 
 /**
  * Columns selected everywhere an Exercise is returned. Kept in one constant so
  * a schema addition can't leave one query returning a half-populated object.
  */
-const COLS = 'id, name, muscle_group, equipment, is_custom, rep_chips, notes, archived';
+const COLS =
+  'id, name, muscle_group, equipment, is_custom, rep_chips, notes, archived, weight_mode';
 
 export interface ExerciseFilter {
   search?: string;
@@ -87,6 +88,8 @@ export interface NewExercise {
   equipment: Equipment;
   notes?: string | null;
   repChips?: number[] | null;
+  /** Defaults to 'total' — the safe reading for anything the user hasn't said otherwise about. */
+  weight_mode?: WeightMode;
 }
 
 export async function createExercise(input: NewExercise): Promise<string> {
@@ -96,8 +99,8 @@ export async function createExercise(input: NewExercise): Promise<string> {
   await getDb().runAsync(
     `INSERT INTO exercises
        (id, name, muscle_group, equipment, is_custom, rep_chips, notes, archived,
-        created_at, updated_at, dirty)
-     VALUES (?, ?, ?, ?, 1, ?, ?, 0, ?, ?, 1);`,
+        weight_mode, created_at, updated_at, dirty)
+     VALUES (?, ?, ?, ?, 1, ?, ?, 0, ?, ?, ?, 1);`,
     [
       id,
       input.name.trim(),
@@ -105,6 +108,7 @@ export async function createExercise(input: NewExercise): Promise<string> {
       input.equipment,
       input.repChips ? JSON.stringify(input.repChips) : null,
       input.notes ?? null,
+      input.weight_mode ?? 'total',
       now,
       now,
     ],
@@ -115,7 +119,9 @@ export async function createExercise(input: NewExercise): Promise<string> {
 
 export async function updateExercise(
   id: string,
-  patch: Partial<Pick<Exercise, 'name' | 'muscle_group' | 'equipment' | 'notes' | 'archived'>> & {
+  patch: Partial<
+    Pick<Exercise, 'name' | 'muscle_group' | 'equipment' | 'notes' | 'archived' | 'weight_mode'>
+  > & {
     repChips?: number[] | null;
   },
 ): Promise<void> {
@@ -132,6 +138,7 @@ export async function updateExercise(
   if (patch.equipment !== undefined) set('equipment', patch.equipment);
   if (patch.notes !== undefined) set('notes', patch.notes);
   if (patch.archived !== undefined) set('archived', patch.archived);
+  if (patch.weight_mode !== undefined) set('weight_mode', patch.weight_mode);
   if (patch.repChips !== undefined) {
     set('rep_chips', patch.repChips ? JSON.stringify(patch.repChips) : null);
   }

@@ -289,6 +289,14 @@ export async function getDayExercises(splitDayId: string): Promise<DayExercise[]
   );
 }
 
+export async function getDayExercise(dayExerciseId: string): Promise<DayExercise | null> {
+  return getDb().getFirstAsync<DayExercise>(
+    `SELECT id, exercise_id, position FROM split_day_exercises
+      WHERE id = ? AND deleted_at IS NULL;`,
+    [dayExerciseId],
+  );
+}
+
 export async function addExerciseToDay(splitDayId: string, exerciseId: string): Promise<string> {
   const db = getDb();
   const now = Date.now();

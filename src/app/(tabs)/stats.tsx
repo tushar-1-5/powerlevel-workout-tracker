@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'expo-router';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
@@ -10,6 +11,7 @@ import type { AppSettings, BodyweightLog, Exercise } from '@/db/types';
 import { formatShortDate } from '@/lib/format';
 import { computeBestStreak, computeStreak } from '@/lib/streak';
 import { formatWeight, kgToLb, UNIT_LABEL } from '@/lib/units';
+import { weightSuffix } from '@/lib/weightMode';
 import { getLatestBodyweight, listBodyweightLogs } from '@/queries/bodyweight';
 import { listExercises } from '@/queries/exercises';
 import { getSettings } from '@/queries/settings';
@@ -27,6 +29,20 @@ import {
   type WeekVolume,
 } from '@/queries/stats';
 import { colors, font, glass, radius, spacing } from '@/theme/tokens';
+
+/**
+ * The four lifts pinned to the top of the PR section, by their seed names.
+ * Matched case-insensitively against `getAllTimePRs()` — which this screen
+ * already loads — so there's no extra query. If one is renamed or has never
+ * been logged, its tile stays and shows "—" rather than vanishing: a grid that
+ * silently reshuffles when data is missing reads as if nothing is missing.
+ */
+const FEATURED_PRS: readonly { name: string; label: string }[] = [
+  { name: 'Back Squat', label: 'Squat' },
+  { name: 'Barbell Bench Press', label: 'Bench Press' },
+  { name: 'Deadlift', label: 'Deadlift' },
+  { name: 'Leg Press', label: 'Leg Press' },
+];
 
 /**
  * Stats from the PRD's §7: per-exercise progress chart, PRs, volume trend,
@@ -177,7 +193,7 @@ export default function StatsScreen() {
                 <View style={styles.prRow}>
                   <Text style={styles.prLabel}>PR</Text>
                   <Text style={styles.prValue}>
-                    {formatWeight(toDisplayWeight(pr.weightKg))} {unitLabel} × {pr.reps}
+                    {formatWeight(toDisplayWeight(pr.weightKg))} {weightSuffix(selected, unitLabel)} × {pr.reps}
                   </Text>
                   <Text style={styles.prDate}>{formatShortDate(pr.achievedAt)}</Text>
                 </View>
@@ -188,25 +204,48 @@ export default function StatsScreen() {
           ) : null}
         </View>
 
-        {allTimePRs.length > 0 ? (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>All-Time PRs</Text>
-            <GlassSurface style={styles.card}>
-              {allTimePRs.map((p, index) => (
-                <View
-                  key={p.exerciseId}
-                  style={[styles.prListRow, index < allTimePRs.length - 1 && styles.prListRowDivider]}>
-                  <Text style={styles.prListName} numberOfLines={1}>
-                    {p.exerciseName}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Personal Records</Text>
+          {/* Row container — `gap` renders on rows (see ExercisePageV2's note). */}
+          <View style={styles.tileGrid}>
+            {FEATURED_PRS.map((featured) => {
+              const p = allTimePRs.find((x) => x.exerciseName.toLowerCase() === featured.name.toLowerCase());
+              return (
+                <GlassSurface key={featured.name} style={styles.tile}>
+                  <Text style={styles.tileLabel} numberOfLines={1}>
+                    {featured.label}
                   </Text>
-                  <Text style={styles.prListValue}>
-                    {formatWeight(toDisplayWeight(p.weightKg))} {unitLabel} × {p.reps}
-                  </Text>
-                </View>
-              ))}
-            </GlassSurface>
+                  {p ? (
+                    <>
+                      <Text style={styles.tileValue} numberOfLines={1}>
+                        {formatWeight(toDisplayWeight(p.weightKg))}
+                        <Text style={styles.tileUnit}>
+                          {' '}
+                          {weightSuffix({ weight_mode: p.weightMode, muscle_group: p.muscleGroup }, unitLabel)}
+                        </Text>
+                      </Text>
+                      <Text style={styles.tileMeta} numberOfLines={1}>
+                        × {p.reps} · {formatShortDate(p.achievedAt)}
+                      </Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={[styles.tileValue, styles.tileValueEmpty]}>—</Text>
+                      <Text style={styles.tileMeta}>Not logged yet</Text>
+                    </>
+                  )}
+                </GlassSurface>
+              );
+            })}
           </View>
-        ) : null}
+          <Pressable onPress={() => router.push('/stats/prs')} accessibilityRole="button">
+            <GlassSurface style={styles.viewAll}>
+              <Text style={styles.viewAllText}>View all PRs</Text>
+              <Text style={styles.viewAllCount}>{allTimePRs.length}</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.accent} />
+            </GlassSurface>
+          </Pressable>
+        </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Volume — last 8 weeks</Text>
@@ -318,16 +357,36 @@ const styles = StyleSheet.create({
   },
   prValue: { color: colors.text, fontSize: font.heading, fontWeight: '800', fontVariant: ['tabular-nums'] },
   prDate: { color: colors.textMuted, fontSize: font.caption },
-  prListRow: {
+  tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  // 47%, not 50%: two tiles plus the 8px gap must fit inside one row. 50%
+  // each would overflow by exactly the gap and wrap every tile onto its own line.
+  tile: { flexBasis: '47%', flexGrow: 1, padding: spacing.md },
+  tileLabel: {
+    color: colors.textMuted,
+    fontSize: font.micro,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  tileValue: {
+    color: colors.text,
+    fontSize: font.title,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+    marginTop: spacing.xs,
+  },
+  tileValueEmpty: { color: colors.textMuted },
+  tileUnit: { color: colors.textSecondary, fontSize: font.label, fontWeight: '700' },
+  tileMeta: { color: colors.textSecondary, fontSize: font.caption, marginTop: 2, fontVariant: ['tabular-nums'] },
+  viewAll: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.lg,
   },
-  prListRowDivider: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  prListName: { flex: 1, color: colors.text, fontSize: font.body, fontWeight: '600' },
-  prListValue: { color: colors.textSecondary, fontSize: font.label, fontVariant: ['tabular-nums'] },
+  viewAllText: { flex: 1, color: colors.accent, fontSize: font.body, fontWeight: '700' },
+  viewAllCount: { color: colors.textMuted, fontSize: font.label, fontWeight: '700', fontVariant: ['tabular-nums'] },
   monthRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: 4 },
   monthLabel: { width: 72, color: colors.textSecondary, fontSize: font.caption },
   monthBarTrack: { flex: 1, height: 10, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt, overflow: 'hidden' },

@@ -75,7 +75,10 @@ export default function BackfillScreen() {
         splitId,
         splitDayId: dayId,
         dayName: day.name,
-        exerciseIds: dayExercises.map((de) => de.exercise_id),
+        exercises: dayExercises.map((de) => ({
+          exerciseId: de.exercise_id,
+          sourceSplitDayExerciseId: de.id,
+        })),
         startedAt,
       });
 

@@ -10,8 +10,10 @@ import {
   MUSCLE_LABELS,
   type Equipment,
   type MuscleGroup,
+  type WeightMode,
 } from '@/db/types';
 import * as haptics from '@/lib/haptics';
+import { sideNoun } from '@/lib/weightMode';
 import { createExercise } from '@/queries/exercises';
 import { colors, font, glass, radius, spacing } from '@/theme/tokens';
 
@@ -26,6 +28,7 @@ export default function NewExerciseScreen() {
   const [name, setName] = useState('');
   const [muscleGroup, setMuscleGroup] = useState<MuscleGroup>('chest');
   const [equipment, setEquipment] = useState<Equipment>('barbell');
+  const [weightMode, setWeightMode] = useState<WeightMode>('total');
   const [saving, setSaving] = useState(false);
 
   const canSave = name.trim().length > 0 && !saving;
@@ -35,7 +38,7 @@ export default function NewExerciseScreen() {
     setSaving(true);
     haptics.confirm();
     try {
-      await createExercise({ name, muscle_group: muscleGroup, equipment });
+      await createExercise({ name, muscle_group: muscleGroup, equipment, weight_mode: weightMode });
       router.back();
     } catch {
       haptics.warn();
@@ -93,6 +96,23 @@ export default function NewExerciseScreen() {
               />
             ))}
           </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.label}>Weight entry</Text>
+          <View style={styles.grid}>
+            <PickChip label="Total" active={weightMode === 'total'} onPress={() => setWeightMode('total')} />
+            <PickChip
+              label={`Each ${sideNoun(muscleGroup)}`}
+              active={weightMode === 'per_side'}
+              onPress={() => setWeightMode('per_side')}
+            />
+          </View>
+          <Text style={styles.hint}>
+            {weightMode === 'per_side'
+              ? `You'll enter the weight on one ${sideNoun(muscleGroup)} — e.g. one dumbbell. Volume counts it twice.`
+              : "You'll enter the whole load — e.g. the full bar."}
+          </Text>
         </View>
       </ScrollView>
 
@@ -163,5 +183,6 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
   chipText: { color: colors.textSecondary, fontSize: font.caption, fontWeight: '700' },
   chipTextActive: { color: colors.onAccent },
+  hint: { color: colors.textMuted, fontSize: font.caption },
   footer: { padding: spacing.lg, paddingTop: spacing.sm },
 });

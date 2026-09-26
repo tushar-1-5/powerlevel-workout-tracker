@@ -211,7 +211,10 @@ export default function TodayScreen() {
         splitId: split.id,
         splitDayId: selectedDayId,
         dayName: day.name,
-        exerciseIds: exercises.map((e) => e.id),
+        exercises: exercises.map((e, i) => ({
+          exerciseId: e.id,
+          sourceSplitDayExerciseId: dayExerciseIds[i] ?? null,
+        })),
       });
       router.push({ pathname: '/workout/log', params: { workoutId } });
     } catch (err) {
