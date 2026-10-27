@@ -2,6 +2,8 @@ import { StyleSheet, Text, View } from 'react-native';
 
 import { colors, font, glass, radius, spacing } from '@/theme/tokens';
 
+export type DeltaDirection = 'up' | 'down' | 'same';
+
 export interface LastSessionDeltaProps {
   /** What you are about to log. */
   current: number;
@@ -10,6 +12,9 @@ export interface LastSessionDeltaProps {
   format?: (value: number) => string;
   /** Trailing unit, e.g. "kg". Omitted for reps. */
   suffix?: string;
+  /** Override the auto-computed direction — lets the caller factor in context
+   *  the component doesn't have (e.g. weight changes when comparing reps). */
+  direction?: DeltaDirection;
 }
 
 /**
@@ -25,6 +30,7 @@ export function LastSessionDelta({
   previous,
   format = String,
   suffix,
+  direction: directionOverride,
 }: LastSessionDeltaProps) {
   if (previous === null) {
     return (
@@ -36,7 +42,8 @@ export function LastSessionDelta({
     );
   }
 
-  const direction = current > previous ? 'up' : current < previous ? 'down' : 'same';
+  const direction: DeltaDirection =
+    directionOverride ?? (current > previous ? 'up' : current < previous ? 'down' : 'same');
   const tone =
     direction === 'up' ? styles.up : direction === 'down' ? styles.down : styles.same;
   const arrow = direction === 'up' ? '↑' : direction === 'down' ? '↓' : '';

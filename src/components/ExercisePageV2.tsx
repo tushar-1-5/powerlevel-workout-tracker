@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { GlassSurface } from '@/components/GlassSurface';
-import { LastSessionDelta } from '@/components/LastSessionDelta';
+import { LastSessionDelta, type DeltaDirection } from '@/components/LastSessionDelta';
 import { PrimaryButton } from '@/components/PrimaryButton';
 import { RepChips } from '@/components/RepChips';
 import { Stepper } from '@/components/Stepper';
@@ -250,6 +250,17 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
         : `Editing ${mode.label}`;
 
   const comparison = mode.kind === 'log' ? lastSession[workingTopLevel.length] ?? null : null;
+
+  // Weight-aware reps direction: fewer reps at heavier weight is expected,
+  // not a regression, so the reps pill stays neutral instead of going red.
+  const repsDirection: DeltaDirection | undefined = (() => {
+    if (!comparison) return undefined;
+    const prevWeight = toDisplay(comparison.weight_kg, settings.units);
+    if (reps > comparison.reps) return 'up';
+    if (reps === comparison.reps) return weight >= prevWeight ? 'same' : 'down';
+    return weight > prevWeight ? 'same' : 'down';
+  })();
+
   const step = displayStep(settings);
   const unitLabel = UNIT_LABEL[settings.units];
 
@@ -348,7 +359,7 @@ export function ExercisePage({ workoutId, workoutExerciseId, exercise, settings 
               accessibilityLabel="reps"
               footer={
                 mode.kind === 'log' ? (
-                  <LastSessionDelta current={reps} previous={comparison?.reps ?? null} />
+                  <LastSessionDelta current={reps} previous={comparison?.reps ?? null} direction={repsDirection} />
                 ) : undefined
               }
             />
