@@ -10,7 +10,7 @@
     "backgroundColor": "#0A0A0B",
     "android": {
       "package": "com.tushar.powerlevel",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "backgroundColor": "#0A0A0B",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
