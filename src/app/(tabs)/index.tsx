@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useCallback, useState } from 'react';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DragList } from '@/components/DragList';
@@ -14,7 +14,7 @@ import { PrimaryButton } from '@/components/PrimaryButton';
 import { TodayHeader } from '@/components/TodayHeader';
 import { MUSCLE_LABELS, type Exercise, type Split, type SplitDay, type Workout } from '@/db/types';
 import * as haptics from '@/lib/haptics';
-import { EXERCISES, ONBOARDING, SPLITS, exercisesSwapDayHref } from '@/lib/routes';
+import { EXERCISES, ONBOARDING, SPLITS, exercisesPickerHref, exercisesSwapDayHref } from '@/lib/routes';
 import { describeSuggestion, resolveSuggestedDay, type DaySuggestion } from '@/lib/scheduling';
 import { getExercisesByIds, resolveOrderedExercises } from '@/queries/exercises';
 import { getSettings, updateSettings } from '@/queries/settings';
@@ -23,6 +23,7 @@ import {
   getDefaultSplit,
   getSplitDays,
   listSplits,
+  removeExerciseFromDay,
   reorderDayExercises,
 } from '@/queries/splits';
 import {
@@ -84,6 +85,12 @@ export default function TodayScreen() {
   const [dayExerciseIds, setDayExerciseIds] = useState<string[]>([]);
 
   const [starting, setStarting] = useState(false);
+
+  // "Remove Exercises" mode, entered from the ⋮ menu: rows become tick-boxes
+  // and a small Delete button appears top-right. Selection is keyed by the
+  // `split_day_exercises` id, the same id handleSwap and reorder already use.
+  const [removeMode, setRemoveMode] = useState(false);
+  const [selectedForRemoval, setSelectedForRemoval] = useState<ReadonlySet<string>>(new Set());
 
   // Reloads every time Today regains focus, not just on mount — returning
   // here from the workout stub screen after Finish must pick up the
@@ -169,6 +176,9 @@ export default function TodayScreen() {
   // and re-anchoring only happens once a workout is actually finished on the
   // picked day (which `resolveSuggestedDay` already handles next time round).
   const selectDay = useCallback((dayId: string) => {
+    // A selection made on one day's rows means nothing on another's.
+    setRemoveMode(false);
+    setSelectedForRemoval(new Set());
     setSelectedDayId(dayId);
     setExercises([]);
     setDayExerciseIds([]);
@@ -198,6 +208,49 @@ export default function TodayScreen() {
     setDayExerciseIds(next.map((r) => r.dayExerciseId));
     void reorderDayExercises(next.map((r) => r.dayExerciseId));
   }, []);
+
+  const exitRemoveMode = useCallback(() => {
+    setRemoveMode(false);
+    setSelectedForRemoval(new Set());
+  }, []);
+
+  const toggleRemoval = useCallback((dayExerciseId: string) => {
+    haptics.tick();
+    setSelectedForRemoval((prev) => {
+      const next = new Set(prev);
+      if (next.has(dayExerciseId)) next.delete(dayExerciseId);
+      else next.add(dayExerciseId);
+      return next;
+    });
+  }, []);
+
+  // Like swap and reorder above, removing here edits the split day itself —
+  // permanent, hence the confirm. `removeExerciseFromDay` is a soft delete
+  // (sets deleted_at), so past workouts that used the exercise are untouched.
+  const handleDeleteSelected = useCallback(() => {
+    const ids = Array.from(selectedForRemoval);
+    if (ids.length === 0) return;
+    Alert.alert(
+      ids.length === 1 ? 'Remove 1 exercise?' : `Remove ${ids.length} exercises?`,
+      'This edits your split — they will no longer appear on this day.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: () => {
+            haptics.warn();
+            const gone = new Set(ids);
+            const keep = dayExerciseIds.map((id) => !gone.has(id));
+            setExercises((prev) => prev.filter((_, i) => keep[i]));
+            setDayExerciseIds((prev) => prev.filter((_, i) => keep[i]));
+            exitRemoveMode();
+            void Promise.all(ids.map(removeExerciseFromDay));
+          },
+        },
+      ],
+    );
+  }, [selectedForRemoval, dayExerciseIds, exitRemoveMode]);
 
   const handleStart = useCallback(async () => {
     if (!split || !selectedDayId || exercises.length === 0 || starting) return;
@@ -303,9 +356,39 @@ export default function TodayScreen() {
   const showCaption =
     !!suggestion && (isRest || (!!suggestion.day && selectedDayId === suggestion.day.id));
 
+  // Add/Remove act on the selected day's exercises, so they only exist in this
+  // main view (the other states above have no day to edit).
+  const dayMenuItems = [
+    ...(selectedDayId
+      ? [{ label: 'Add Exercise', onPress: () => router.push(exercisesPickerHref(selectedDayId)) }]
+      : []),
+    ...(exercises.length > 0
+      ? [{ label: 'Remove Exercises', onPress: () => setRemoveMode(true) }]
+      : []),
+    ...menuItems,
+  ];
+
   return (
     <View style={[styles.screen, { paddingTop: insets.top + spacing.lg }]}>
-      <OverflowMenu items={menuItems} />
+      {removeMode ? (
+        <View style={[styles.removeBar, { top: insets.top + spacing.xs }]}>
+          <Pressable onPress={exitRemoveMode} hitSlop={8} accessibilityRole="button">
+            <Text style={styles.removeCancel}>Cancel</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleDeleteSelected}
+            disabled={selectedForRemoval.size === 0}
+            hitSlop={8}
+            style={[styles.removeButton, selectedForRemoval.size === 0 && styles.removeButtonOff]}
+            accessibilityRole="button">
+            <Text style={styles.removeButtonText}>
+              {selectedForRemoval.size > 0 ? `Delete (${selectedForRemoval.size})` : 'Delete'}
+            </Text>
+          </Pressable>
+        </View>
+      ) : (
+        <OverflowMenu items={dayMenuItems} />
+      )}
       <ScrollView contentContainerStyle={styles.content}>
         <TodayHeader
           dayName={headerDayName}
@@ -319,6 +402,33 @@ export default function TodayScreen() {
             <GlassSurface style={styles.emptyCard}>
               <Text style={styles.emptyText}>Pick a group above to see its exercises.</Text>
             </GlassSurface>
+          ) : removeMode ? (
+            // A plain list, not DragList: no long-press drag to fight with the
+            // tap-to-tick, and the rows keep DragList's height so nothing jumps.
+            exercises.map((exercise, i) => {
+              const dayExerciseId = dayExerciseIds[i];
+              const ticked = selectedForRemoval.has(dayExerciseId);
+              return (
+                <Pressable
+                  key={dayExerciseId}
+                  onPress={() => toggleRemoval(dayExerciseId)}
+                  style={styles.removeRow}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: ticked }}>
+                  <GlassSurface style={[styles.dragCard, ticked && styles.removeCardTicked]}>
+                    <View style={styles.dragRowInfo}>
+                      <Text style={styles.dragRowName}>{exercise.name}</Text>
+                      <Text style={styles.dragRowMuscle}>{MUSCLE_LABELS[exercise.muscle_group]}</Text>
+                    </View>
+                    <Ionicons
+                      name={ticked ? 'checkmark-circle' : 'ellipse-outline'}
+                      size={24}
+                      color={ticked ? colors.danger : colors.textMuted}
+                    />
+                  </GlassSurface>
+                </Pressable>
+              );
+            })
           ) : (
             <DragList
               data={exercises.map((exercise, i) => ({ exercise, dayExerciseId: dayExerciseIds[i] }))}
@@ -377,4 +487,26 @@ const styles = StyleSheet.create({
   dragRowName: { color: colors.text, fontSize: font.body, fontWeight: '600' },
   dragRowMuscle: { color: colors.textSecondary, fontSize: font.caption, marginTop: 1 },
   dragRowSwap: { padding: spacing.xs },
+  removeRow: { height: SUGGESTED_ROW_HEIGHT, paddingVertical: 4 },
+  removeCardTicked: { borderWidth: 1, borderColor: colors.danger },
+  // Sits exactly where the ⋮ trigger does (OverflowMenu's own `trigger` style),
+  // so entering/leaving remove mode swaps one for the other without a layout jump.
+  removeBar: {
+    position: 'absolute',
+    right: spacing.md,
+    zIndex: 10,
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  removeCancel: { color: colors.textSecondary, fontSize: font.label, fontWeight: '600' },
+  removeButton: {
+    paddingVertical: 6,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.danger,
+  },
+  removeButtonOff: { opacity: 0.35 },
+  removeButtonText: { color: colors.text, fontSize: font.label, fontWeight: '700' },
 });
